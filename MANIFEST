@@ -1,0 +1,8 @@
+Changes
+Makefile.PL
+MANIFEST
+README
+Scorecard.pm
+example.pdf
+example.plx
+t/Scorecard.t
