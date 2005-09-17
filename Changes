@@ -1,2 +1,19 @@
+0.02  Fri Sep 16 23:47:38 2005
+	- run actual test
+	- clean up internal path handling
+	- add home_away() method for switching which is active team
+	- adds 'lefties' key for init() method, an array of which pitchers
+	  are lefites
+	- add Wind game info
+	- switch order of K and BB in stats to be more consistent with
+	  box scores I am comparing against
+	- handle more than three batters for each position, up to six extra
+	  total
+	- fix small bug in pitches()
+	- add LABEL argument to hit()
+	- small layout fixes
+	- add play_ball() method, a way of keeping score entirely in
+	  text, insetad of calling methods directly (see example2.plx)
+
 0.01  Wed Sep 14 13:45:51 2005
 	- original version

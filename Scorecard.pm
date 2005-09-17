@@ -7,9 +7,10 @@ require 5.006;
 
 use File::Path;
 use File::Temp 'tempdir';
-use File::Spec::Functions;
+use File::Spec::Functions qw(:DEFAULT rel2abs);
+use Text::ParseWords;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 our($SCORECARD, $TEX, $TEXD);
 our $MPOST   = 'mpost';
@@ -35,6 +36,7 @@ our @FONTS = (
 	[ myriadrcbrl => 22 ],
 );
 
+# cmssdc10 is another nice one, i prefer this: it's darker and narrower
 @FONTS = (
 	# ones that should work everywhere:
 	[ phvr8rn =>  8 ],
@@ -63,25 +65,27 @@ Games::Baseball::Scorecard
 	# fill initial scorecard out
 	$s->init({
 		scorer	=> 'Pudge',
-		date	=> '2004-10-28, 20:05 ET',
-		at	=> 'Busch Stadium, St. Louis',
-		temp	=> '77',
-		att	=> '55,234',
-		away	=> {
+		date	=> '2004-10-24, 20:05-23:25',
+		at	=> 'Fenway Park, Boston',
+		temp	=> '48 clear',
+		wind	=> '7 to RF',
+		att	=> '35,001',
+		home	=> {
 			team	=> 'Boston Red Sox',
-			starter	=> 12, # jersey number
+			starter	=> 38, # jersey number
 			lineup	=> [
 				# [ num, position ],
-				[ 3, 6],
+				[ 18, 8 ], # Damon, starting at CF
 				# ...
 			],
 			roster	=> {
 				# num => name
-				23 => 'Cora, Alex',
+				18 => 'Damon, Johnny',
+				38 => 'Schilling, Curt',
 				# ...
 			},
 		},
-		home	=> {
+		away	=> {
 			team	=> 'St. Louis Cardinals',
 			# ...
 		}
@@ -183,11 +187,9 @@ sub new {
 	$base ||= 'scorecard';
 	$base =~ s/\W+//g;
 
+	$dir = rel2abs($dir) unless file_name_is_absolute($dir);
+
 	mkpath($dir) unless -e $dir;
-	unless (chdir $dir) {
-		warn $!;
-		return;
-	}
 
 	my $self = bless {
 		debug	=> 0,
@@ -260,14 +262,12 @@ sub new {
 	print $fhd $texd;
 	close $fhd;
 
-	for (qw(away home)) {
-		$self->{curr} = $self->{$_};
+	for (qw(home away)) {
+		$self->home_away($_);
 		$self->begin;
 		$self->top if /away/;
 		$self->bottom if /home/;
 	}
-
-	$self->{curr} = $self->{away};
 
 	return $self;
 }
@@ -294,7 +294,7 @@ The <init> method accepts a single hashref that has all the data needed to
 generate the initial scorecard.  You can some of the methods directly on your
 own, but you really don't want to.
 
-The hashref contains five root-level string keys: C<date>, C<temp>,
+The hashref contains various root-level string keys: C<date>, C<temp>, C<wind>,
 C<at>, C<att>, C<scorer>.  Each takes a simple string.
 
 It also takes two hashref keys, C<away> and C<home>.  Each works the same way.
@@ -308,8 +308,13 @@ element as an arrayref of [ jersey number, position ].
 The position is standard baseball position numbering: 1 P, 2 C,
 3 1B, 4 2B, 5 3B, 6 SS, 7 LF, 8 CF, 9 RF.  I use 0 for DH.
 
-Players are thus referenced by their jersey number, when making them the starter,
-putting them in the starting lineup, or when adding a new player or pitcher.
+Players are thus referenced by their jersey number, when making them the
+starter, putting them in the starting lineup, or when adding a new player
+or pitcher.
+
+The C<lefties> key is optional; if present, it is used to determine which
+pitchers are lefties.  It takes a simple arrayref listing the jersey numbers
+of the southpaws on the roster.
 
 If not using this module to generate the entire game, but just the initial
 scorecard, then the roster needs only include the players in the starting lineup.
@@ -320,7 +325,7 @@ sub init {
 	my($self, $data) = @_;
 
 	for my $which (qw(away home)) {
-		$self->{curr} = $self->{$which};
+		$self->home_away($which);
 
 		$self->team  ( $data->{$which}{team} );
 		$self->date  ( $data->{date}         );
@@ -329,8 +334,10 @@ sub init {
 		$self->at    ( $data->{at}           );
 		$self->att   ( $data->{att}          );
 		$self->scorer( $data->{scorer}       );
+		$self->wind  ( $data->{wind}         );
 
 		my $roster = $self->{curr}{roster} = $data->{$which}{roster};
+		$self->{curr}{lefties} = $data->{$which}{lefties};
 
 		my $order = 0;
 		for (@{$data->{$which}{lineup}}) {
@@ -338,13 +345,11 @@ sub init {
 		}
 	}
 
-	$self->{curr} = $self->{away};
-	$self->{other} = $self->{home};
-	$self->add_pitcher($data->{home}{starter});
+	$self->home_away('away');
+	$self->add_pitcher($data->{home}{starter}) if $data->{home}{starter};
 
-	$self->{curr} = $self->{home};
-	$self->{other} = $self->{away};
-	$self->add_pitcher($data->{away}{starter});
+	$self->home_away('home');
+	$self->add_pitcher($data->{away}{starter}) if $data->{away}{starter};
 }
 
 
@@ -366,22 +371,28 @@ sub generate {
 	for (qw(away home)) {
 		my $base = $self->{$_}{base};
 
-		$self->_run("$MPOST   $base.mp");
-		$self->_run("$MPTOPDF $base.0");
-		$self->_run("$PDFTEX  $base.tex");
+		$self->_run($MPOST,   "$base.mp");
+		$self->_run($MPTOPDF, "$base.0");
+		$self->_run($PDFTEX,  "$base.tex");
 	}
 
-	$self->_run("$PDFTEX  $self->{base}.tex");
+	$self->_run($PDFTEX, "$self->{base}.tex");
 
 	return catfile($self->{dir}, "$self->{base}.pdf");
 }
 
 sub _run {
-	my($self, $command) = @_;
+	my($self, $command, $file) = @_;
+
+	unless (chdir $self->{dir}) {
+		die "Can't chdir $self->{dir}: $!";
+	}
+
+	my $path = catfile($self->{dir}, $file);
 	print "==> " if $self->{debug} > 1;
-	print "$command\n" if $self->{debug};
+	print "$command $path\n" if $self->{debug};
 	local $/;
-	my $output = `$command`;
+	my $output = `$command $path`;
 
 	if ($self->{debug} > 1) {
 		print "<== $output" if $output;
@@ -406,13 +417,13 @@ sub close {
 	my($self) = @_;
 
 	for (qw(away home)) {
-		$self->{curr} = $self->{$_};
-		if ($self->{$_}{fh}) {
+		$self->home_away($_);
+		if ($self->{curr}{fh}) {
 			$self->end;
 			$self->output("\nend\n");
 
-			close $self->{$_}{fh};
-			delete $self->{$_}{fh};
+			close $self->{curr}{fh};
+			delete $self->{curr}{fh};
 		}
 	}
 }
@@ -428,7 +439,27 @@ used by Mac OS X to open the document in the default PDF viewer).
 sub pdfopen {
 	my($self) = @_;
 
-	$self->_run("$OPEN $self->{base}.pdf") if $OPEN;
+	$self->_run($OPEN, "$self->{base}.pdf") if $OPEN;
+}
+
+
+=item home_away([WHICH])
+
+Switch which team is home, and which is away.  If WHICH then set specifically.
+
+=cut
+
+sub home_away {
+	my($self, $which) = @_;
+
+	if ($which) {
+		$self->{curr}  = $self->{$which};
+		$self->{other} = $self->{
+			$which eq 'home' ? 'away' : 'home'
+		};
+	} else {
+		($self->{curr}, $self->{other}) = ($self->{other}, $self->{curr});
+	}
 }
 
 
@@ -463,8 +494,8 @@ sub inn {
 		$self->output(_label(_btex($stats->{h}  ||= 0),   '1/2[(xstart+50u,-150),(xstart+100u,-100+400)]'));
 		$self->output(_label(_btex($stats->{e}  ||= 0),   '1/2[(xstart,-200),(xstart+50u,-150+400)]'));
 		$self->output(_label(_btex($stats->{lb} ||= 0),   '1/2[(xstart+50u,-200),(xstart+100u,-150+400)]'));
-		$self->output(_label(_btex($stats->{k}  ||= 0),   '1/2[(xstart,-250),(xstart+50u,-200+400)]'));
-		$self->output(_label(_btex($stats->{bb} ||= 0),   '1/2[(xstart+50u,-250),(xstart+100u,-200+400)]'));
+		$self->output(_label(_btex($stats->{bb} ||= 0),   '1/2[(xstart,-250),(xstart+50u,-200+400)]'));
+		$self->output(_label(_btex($stats->{k}  ||= 0),   '1/2[(xstart+50u,-250),(xstart+100u,-200+400)]'));
 		$self->output(_label(_btex($stats->{strikes}||0), '1/2[(xstart,-300),(xstart+50u,-250+400)]'));
 		$self->output(_label(_btex($stats->{pitches}||0), '1/2[(xstart+50u,-300),(xstart+100u,-250+400)]'));
 
@@ -473,10 +504,7 @@ sub inn {
 
 	$self->output("\n\n    % inning start\n");
 
-	$self->{other} = $self->{curr};
-	$self->{curr} = $self->{
-		$self->{curr}{which} eq 'away' ? 'home' : 'away'
-	};
+	$self->home_away;
 
 	my $inn = $self->{curr}{inn} += 1;
 	$self->{_inn_new} = 1 unless $self->{curr}{inn} == 1;
@@ -548,8 +576,10 @@ where that player entered.
 
 Call this before you call C<ab> (unless the player enters as a pinch runner).
 
-B<Note>: if you add more than three batters for a given position, the module will die.
-See L<LIMITATIONS>.
+B<Note>: if you add more than three batters for a given position, the overflow
+will go to one of the six spots below the nine lineup positions.  No stats
+will be printed for them.  More than six of those, and the names will not be
+printed either.
 
 =cut
 
@@ -557,23 +587,32 @@ sub add_player {
 	my($self, $order, $number, $pos, $inn) = @_;
 	$inn ||= $self->{curr}{inn} || 1;
 
-	my $lineup = $self->{curr}{lineup} ||= [];
+	my $lineup  = $self->{curr}{lineup}  ||= [];
+	my $lineupx = $self->{curr}{lineupx} ||= {};
 	my $name = $self->{curr}{roster}{$number};
 
 	my $rep = '';
+	my $rep2;
+	my $xtra = 0;
 	if ($lineup->[$order]) {
-		my $rep2 = 1;
-		$rep2 += @{$lineup->[$order]};
+		$rep2 = 1 + @{$lineup->[$order]};
 		if ($rep2 > 3) {
-			die "fixme!";
+			$rep2 = 1 + keys %$lineupx;
+			if ($rep2 > 6) {
+				warn "Too many batters\n";
+			}
+			$xtra = 1;
 		}
 		$rep = "*$rep2";
 
 		$self->{curr}{lineupnew}[$order] = 1;
 
+		my $curr_batter = $self->{curr}{stats}{batters}{
+			$lineup->[$order][-1][0]
+		} ||= {};
+
 		if ($self->{curr}{stats}{batter} &&
-		    $self->{curr}{stats}{batter} eq
-		    $self->{curr}{stats}{batters}{ $lineup->[$order][-1][0] }
+		    $self->{curr}{stats}{batter} eq $curr_batter
 		) {
 			$self->{curr}{stats}{batter} =
 				$self->{curr}{stats}{batters}{$number} ||= {};
@@ -581,16 +620,25 @@ sub add_player {
 	}
 
 	push @{$lineup->[$order]}, [ $number, $pos, $inn ];
+	$lineupx->{$number} = $order if $xtra;
 
-	my $ystart = 1000 - $order * 100;
+	my $ystart = 1000 - ($xtra ? 10 : $order) * 100;
 	my $x = '100-iposwidth';
 	my $y = "$ystart+100u-100u/3$rep";
 	my $dir = 'urt';
 
-	$self->output(_label(_btex($name),   "$x*2-namewidth", $y, $dir));
-	$self->output(_label(_btex($number), "$x*3-namewidth", $y, $dir));
-	$self->output(_label(_btex($pos),    "$x*2",           $y, $dir));
-	$self->output(_label(_btex($inn),     $x,              $y, $dir));
+	if (!$rep2 || $rep2 <= 6) {
+		if ($xtra) {
+			my $name2 = "$name ($inn)";
+			$self->output(_label(_btex($order, 'sf'), '-224u', "92u-(($rep2-1)*100u/3)"));
+			$self->output(_label(_btex($name2),  "$x*2-namewidth", $y, $dir));
+		} else {
+			$self->output(_label(_btex($name),   "$x*2-namewidth", $y, $dir));
+			$self->output(_label(_btex($inn),     $x,              $y, $dir));
+		}
+		$self->output(_label(_btex($number), "$x*3-namewidth", $y, $dir));
+		$self->output(_label(_btex($pos),    "$x*2",           $y, $dir));
+	}
 }
 
 =item add_pitcher(NUMBER, [, INN])
@@ -624,8 +672,7 @@ sub add_pitcher {
 	my $rep = '';
 	my $xstart = 100;
 	if (@$lineup) {
-		my $rep2 = 1;
-		$rep2 += @$lineup;
+		my $rep2 = 1 + @$lineup;
 		if ($rep2 > 10) {
 			die "fixme!";
 		} elsif ($rep2 > 5) {
@@ -638,8 +685,12 @@ sub add_pitcher {
 
 	push @$lineup, [ $number, $inn ];
 
-#            draw_pitcher_row(100,ystart,clr,true);
-#            draw_pitcher_row(900+100u*(2/3),ystart,clr,false);
+	my $lr;
+	if ($self->{other}{lefties}) {
+		$lr = (grep { $_ == $number } @{$self->{other}{lefties}})
+			? 'L'
+			: 'R';
+	}
 
 	my $ystart = -200;
 	my $x = "$xstart-iposwidth";
@@ -648,8 +699,7 @@ sub add_pitcher {
 
 	$self->output(_label(_btex($name),   "$x*2-namewidth", $y, $dir));
 	$self->output(_label(_btex($number), "$x*3-namewidth", $y, $dir));
-# XXX not yet implemented
-#	$self->output(_label(_btex($lr),     "$x*2",           $y, $dir));
+	$self->output(_label(_btex($lr),     "$x*2+8",         $y, $dir)) if $lr;
 	$self->output(_label(_btex($inn),     $x,              $y, $dir));
 }
 
@@ -670,6 +720,80 @@ before moving on to the next at-bat.
 
 =over 4
 
+=item play_ball
+
+C<play_ball> is a convenience method for handling input as text instead of
+method calls (internally, it converts the text to method calls).
+
+The first token on each line is the method call, and the rest are arguments
+to the method call.
+
+Shorthands include 'p' for C<pitches>, 'bb' 'ibb' and 'hp' for C<reach()>
+by BB/IBB/HBP, and '-E<gt>' for C<advance>.  Any other tokens that are not
+method names are C<out('token')>.
+
+Example:
+
+	$s->inn;
+	$s->ab;
+		$s->pitches(qw(b s b s b));
+		$s->out('!K');
+	$s->ab;
+		$s->pitches(qw(b b b));
+		$s->reach('bb');
+		$s->advance(2);
+	$s->ab;
+		$s->hit(1, 'l');
+
+Is equivalent to:
+
+	$s->play_ball(<<'EOT');
+		inn
+		ab
+			p b s b s b
+			!K
+		ab
+			p b b b
+			bb
+			-> 2
+		ab
+			hit 1 l
+	
+	EOT
+
+=cut
+
+sub play_ball {
+	my($s, $game) = @_;
+
+	for my $l (split /\n/, $game) {
+		next if $l =~ /^\s*#/;
+		$l =~ s/^\s+//s;
+		$l =~ s/\s+$//s;
+		next unless $l;
+
+		my @w = quotewords('\s+', 0, $l);
+		my $m = shift @w;
+
+		$m = 'pitches' if $m eq 'p';
+		$m = 'advance' if $m eq '->';
+		if ($m =~ /^(i?bb|hp)$/i) {
+			unshift @w, $m;
+			$m = 'reach';
+		}
+
+		unless ($s->can($m)) {
+			unshift @w, $m;
+			$m = 'out';
+		}
+
+		next unless $m;
+		$s->$m(@w);
+	}
+}
+
+
+
 =item pitches(PITCHES)
 
 C<pitches> records the individual pitches of the at-bat (except for the one
@@ -684,10 +808,15 @@ for the stat drawing later.
 sub pitches {
 	my($self, @pitches) = @_;
 	my($s, $b, $f) = (0, 0, 0);
+
 	for (@pitches) {
-		$self->strike(++$s) if (/s/i || (/f/i && $s > 2));
-		$self->ball(++$b)   if /b/i;
-		$self->foul(++$f)   if /f/i;
+		if (/s/i || (/f/i && $s < 2)) {
+			$self->strike(++$s);
+		} elsif (/f/i) {
+			$self->foul(++$f);
+		} elsif (/b/i) {
+			$self->ball(++$b);
+		}
 	}
 }
 
@@ -723,7 +852,7 @@ sub pc {
 	return ++$self->{pc};
 }
 
-=item hit(BASES [, WHERE])
+=item hit(BASES [, WHERE, LABEL])
 
 C<hit> denotes a hit of BASES bases, to WHERE.
 
@@ -743,10 +872,12 @@ fielder recovered it, with these options:
 		rc	right center
 		r	right
 
+LABEL is an optional label to put on the way to first base.
+
 =cut
 
 sub hit {
-	my($self, $bases, $where) = @_;
+	my($self, $bases, $where, $label) = @_;
 	$where ||= '';
 
 	$self->reach($bases, $bases);
@@ -774,6 +905,7 @@ sub hit {
 		                      '';
 
 	$self->output("    draw($loc) withcolor clr;\n") if $loc;
+	$self->output(_label(_btex($label, 'sf'), 'wayfirst', '', 'lrt')) if $label;
 
 }
 
@@ -1236,10 +1368,8 @@ finall C<inn> method call, if you wish to generate the stat totals.
 sub totals {
 	my($self) = @_;
 
-	$self->{curr} = $self->{home};
 	for (qw(away home)) {
-		$self->{other} = $self->{curr};
-		$self->{curr}  = $self->{$_};
+		$self->home_away($_);
 		$self->_totals;
 	}
 }
@@ -1250,7 +1380,7 @@ sub _totals {
 	my $game    = $self->{curr}{stats}{game};
 	my $innings = $self->{curr}{stats}{innings};
 	my(%tstats, %pstats);
-	for my $n (qw(r h e lb k bb strikes pitches)) {
+	for my $n (qw(r h e lb bb k strikes pitches)) {
 		$tstats{$n} += $innings->{$_}{$n} ||= 0 for keys %$innings;
 	}
 
@@ -1259,8 +1389,8 @@ sub _totals {
 	$self->output(_label(_btex($tstats{h}),       '1/2[(1200+100u/3,-150),(1200+100u/3*2,-100+400-nudge)]'));
 	$self->output(_label(_btex($tstats{e}),       '1/2[(1200,-200+nudge),(1200+100u/3,-150+400)]'));
 	$self->output(_label(_btex($tstats{lb}),      '1/2[(1200+100u/3,-200),(1200+100u/3*2,-150+400-nudge)]'));
-	$self->output(_label(_btex($tstats{k}),       '1/2[(1200,-250+nudge),(1200+100u/3,-200+400)]'));
-	$self->output(_label(_btex($tstats{bb}),      '1/2[(1200+100u/3,-250),(1200+100u/3*2,-200+400-nudge)]'));
+	$self->output(_label(_btex($tstats{bb}),      '1/2[(1200,-250+nudge),(1200+100u/3,-200+400)]'));
+	$self->output(_label(_btex($tstats{k}),       '1/2[(1200+100u/3,-250),(1200+100u/3*2,-200+400-nudge)]'));
 	$self->output(_label(_btex($tstats{strikes}), '1/2[(1200,-300+nudge),(1200+100u/3,-250+400)]'));
 	$self->output(_label(_btex($tstats{pitches}), '1/2[(1200+100u/3,-300),(1200+100u/3*2,-250+400-nudge)]'));
 
@@ -1269,8 +1399,9 @@ sub _totals {
 		next unless $lineup->[$i];
 
 		for my $j (0 .. $#{$lineup->[$i]}) {
+			next if $j > 2;
 			my $bstats = $self->{curr}{stats}{batters}{$lineup->[$i][$j][0]};
-			for (qw(ab r h rbi k bb)) {
+			for (qw(ab r h rbi bb k)) {
 				$pstats{$_} += $bstats->{$_} ||= 0;
 			}
 
@@ -1287,8 +1418,8 @@ sub _totals {
 			$self->output(_label(_btex($bstats->{h}),   "$x+((100u/3)*2)", $y, $dir));
 
 			$self->output(_label(_btex($bstats->{rbi}), "$x+((100u/3)*3)", $y, $dir));
-			$self->output(_label(_btex($bstats->{k}),   "$x+((100u/3)*4)", $y, $dir));
-			$self->output(_label(_btex($bstats->{bb}),  "$x+((100u/3)*5)", $y, $dir));
+			$self->output(_label(_btex($bstats->{bb}),  "$x+((100u/3)*4)", $y, $dir));
+			$self->output(_label(_btex($bstats->{k}),   "$x+((100u/3)*5)", $y, $dir));
 		}
 	}
 
@@ -1316,8 +1447,8 @@ sub _totals {
 		$self->output(_label(_btex($kstats->{r}||0),       "$x+((100u/3)*4)",  $y, $dir));
 		$self->output(_label(_btex($kstats->{er}||0),      "$x+((100u/3)*5)",  $y, $dir));
 
-		$self->output(_label(_btex($kstats->{k}||0),       "$x+((100u/3)*6)",  $y, $dir));
-		$self->output(_label(_btex($kstats->{bb}||0),      "$x+((100u/3)*7)",  $y, $dir));
+		$self->output(_label(_btex($kstats->{bb}||0),      "$x+((100u/3)*6)",  $y, $dir));
+		$self->output(_label(_btex($kstats->{k}||0),       "$x+((100u/3)*7)",  $y, $dir));
 		$self->output(_label(_btex($kstats->{ibb}||0),     "$x+((100u/3)*8)",  $y, $dir));
 
 		$self->output(_label(_btex($kstats->{hp}||0),      "$x+((100u/3)*9)",  $y, $dir));
@@ -1428,7 +1559,7 @@ sub date {
 
 sub temp {
 	my($self, $info) = @_;
-	$self->output(_label(_btex($info), 1416+13, 950, 'lft', 'rotated 90'))
+	$self->output(_label(_btex($info), 1416+13, 940, 'lft', 'rotated 90'))
 		if $info;
 }
 
@@ -1447,6 +1578,12 @@ sub att {
 sub scorer {
 	my($self, $info) = @_;
 	$self->output(_label(_btex($info), 1448+13, 700, 'lft', 'rotated 90'))
+		if $info;
+}
+
+sub wind {
+	my($self, $info) = @_;
+	$self->output(_label(_btex($info), 1448+13, 940, 'lft', 'rotated 90'))
 		if $info;
 }
 
@@ -1486,7 +1623,7 @@ sub _label {
 sub _btex {
 	my($string, $font, $lit) = @_;
 	$font ||= 'bigsf';
-	if (!defined $string) {
+	if (!defined $string || !length $string) {
 #		print join "|", caller(0), "\n";
 		return;
 	}
@@ -2001,8 +2138,8 @@ def draw_pitcher_labels(expr xstart,ystart,clr,leftish) =
         label(btex {\bigsf R} etex, 1/2[(xstart+statboxwidth*5,ystart),(xstart+statboxwidth*4,ystart-100u/3)]) withcolor clr;
         label(btex {\bigsf ER} etex, 1/2[(xstart+statboxwidth*6,ystart),(xstart+statboxwidth*5,ystart-100u/3)]) withcolor clr;
         %
-        label(btex {\bigsf SO} etex, 1/2[(xstart+statboxwidth*7,ystart),(xstart+statboxwidth*6,ystart-100u/3)]) withcolor clr;
-        label(btex {\bigsf BB} etex, 1/2[(xstart+statboxwidth*8,ystart),(xstart+statboxwidth*7,ystart-100u/3)]) withcolor clr;
+        label(btex {\bigsf BB} etex, 1/2[(xstart+statboxwidth*7,ystart),(xstart+statboxwidth*6,ystart-100u/3)]) withcolor clr;
+        label(btex {\bigsf SO} etex, 1/2[(xstart+statboxwidth*8,ystart),(xstart+statboxwidth*7,ystart-100u/3)]) withcolor clr;
         label(btex {\bigsf IBB} etex, 1/2[(xstart+statboxwidth*9,ystart),(xstart+statboxwidth*8,ystart-100u/3)]) withcolor clr;
         %
         label(btex {\bigsf HBP} etex, 1/2[(xstart+statboxwidth*10+1,ystart),(xstart+statboxwidth*9+1,ystart-100u/3)]) withcolor clr;
@@ -2160,8 +2297,8 @@ def draw_full_scorecard =
         label(btex {\bigsf H} etex, 1/2[1/2[(100u,100u),(100u-iposwidth,50u)],(100u,50u)]) withcolor clr;
         label(btex {\bigsf E} etex, 1/2[1/2[(100u,50u),(100u-iposwidth,0u)],(100u-iposwidth,50u)]) withcolor clr;
         label(btex {\bigsf LB} etex, 1/2[1/2[(100u,50u),(100u-iposwidth,0u)],(100u,0u)]) withcolor clr;
-        label(btex {\bigsf K} etex, 1/2[1/2[(100u,0u),(100u-iposwidth,-50u)],(100u-iposwidth,0u)]) withcolor clr;
-        label(btex {\bigsf BB} etex, 1/2[1/2[(100u,0u),(100u-iposwidth,-50u)],(100u,-50u)]) withcolor clr;
+        label(btex {\bigsf BB} etex, 1/2[1/2[(100u,0u),(100u-iposwidth,-50u)],(100u-iposwidth,0u)]) withcolor clr;
+        label(btex {\bigsf K} etex, 1/2[1/2[(100u,0u),(100u-iposwidth,-50u)],(100u,-50u)]) withcolor clr;
         label(btex {\bigsf S} etex, 1/2[1/2[(100u,-50u),(100u-iposwidth,-100u)],(100u-iposwidth,-50u)]) withcolor clr;
         label(btex {\bigsf P} etex, 1/2[1/2[(100u,-50u),(100u-iposwidth,-100u)],(100u,-100u)]) withcolor clr;
         % Draw all the row totals boxes
@@ -2202,10 +2339,11 @@ def draw_full_scorecard =
         draw (1433.3,100)--(1433.3,1000) withcolor clr;
         label(btex {\bigsf Team} etex rotated 90, (1416,130)) withcolor clr;
         label(btex {\bigsf FP} etex rotated 90, (1416,614)) withcolor clr;
-        label(btex {\bigsf Temp} etex rotated 90, (1416,900)) withcolor clr;
+        label(btex {\bigsf Temp} etex rotated 90, (1416,870)) withcolor clr;
         label(btex {\bigsf At} etex rotated 90, (1448,142)) withcolor clr;
         label(btex {\bigsf Att} etex rotated 90, (1448,450)) withcolor clr;
         label(btex {\bigsf Scorer} etex rotated 90, (1448,600)) withcolor clr;
+        label(btex {\bigsf Wind} etex rotated 90, (1448,870)) withcolor clr;
         label(btex {\tiny Copyright \char'251 2005, Christopher Swingley, cswingle@iarc.uaf.edu} etex rotated 90, (1472,-210)) withcolor clr;
         % Little numbers for first nine in batting order
         label(btex {\sf 1} etex, (-224u, 995u)) withcolor clr;
@@ -2272,8 +2410,8 @@ def draw_full_scorecard =
             label(btex {\bigsf R} etex, 1/2[(1200+100u/3,1000),(1200+100u/3*2,1000+100u/3)]) withcolor clr;
             label(btex {\bigsf H} etex, 1/2[(1200+100u/3*2,1000),(1300,1000+100u/3)]) withcolor clr;
             label(btex {\bigsf RBI} etex, 1/2[(1300,1000),(1300+100u/3,1000+100u/3)]) withcolor clr;
-            label(btex {\bigsf SO} etex, 1/2[(1300+100u/3,1000),(1300+100u/3*2,1000+100u/3)]) withcolor clr;
-            label(btex {\bigsf BB} etex, 1/2[(1300+100u/3*2,1000),(1400,1000+100u/3)]) withcolor clr;
+            label(btex {\bigsf BB} etex, 1/2[(1300+100u/3,1000),(1300+100u/3*2,1000+100u/3)]) withcolor clr;
+            label(btex {\bigsf SO} etex, 1/2[(1300+100u/3*2,1000),(1400,1000+100u/3)]) withcolor clr;
         pickup pencircle scaled playline_t;
     endgroup
 enddef;
@@ -2335,8 +2473,8 @@ EOT
 
 This module makes no attempt to try to work around the physical limitations
 of the scorecard.  So if there are more than 11 innings, more than nine batters
-in an inning, more than three players in the a lineup position, or more than
-six pitchers, it will fail, either by dying, or just screwing up the output.
+in an inning, more than three players in a lineup position, or more than
+ten pitchers, it will fail, either by dying, or just screwing up the output.
 
 Also, no attempt is made to make sure you have the right number of outs in an
 innings, balls/strikes in a walk/strikeout, and so on.  We don't even necessarily
@@ -2354,14 +2492,9 @@ Patches are welcome for all of this, if you want it.
 
 =head1 TODO
 
-Automatically handle six extra lineup lines over the three lines for
-each existing lineup position.
-
 Automatically, or otherwise, handle more than 9 batters per inning, or more
 than 11 innings, perhaps by adding a new scorecard, or by re-using existing
 innings for overflow.
-
-Internal: a better curr/other method.
 
 
 =head1 AUTHOR
@@ -2381,6 +2514,6 @@ http://www.frontier.iarc.uaf.edu/~cswingle/baseball/scorecards.php
 
 =head1 VERSION
 
-$Id: Scorecard.pm,v 1.3 2005/09/14 22:50:48 pudge Exp $
+$Id: Scorecard.pm,v 1.4 2005/09/17 06:50:33 pudge Exp $
 
 __END__

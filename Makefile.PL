@@ -7,7 +7,7 @@ WriteMakefile(
     		'Test::More'	=> 0,
 	},
 	'clean'		=> {
-		'FILES'		=> 'Games-Baseball-Scorecard-*'
+		'FILES'		=> 'Games-Baseball-Scorecard-* t/gametest'
 	},
 	'NO_META'		=> 1,
 );

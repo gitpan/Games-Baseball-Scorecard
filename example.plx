@@ -18,7 +18,7 @@ $s->init({
 	date	=> '2005-09-09, 19:05-22:45',
 	at	=> 'Yankee Stadium, New York',
 	att	=> '55,024',
-	temp	=> '77',
+	temp	=> '77 clear',
 	away	=> {
 		team	=> 'Boston Red Sox',
 		starter	=> 16,
@@ -58,6 +58,9 @@ $s->init({
 			49 => 'Wakefield, Tim',
 			16 => 'Wells, David',
 		},
+		lefties => [
+			16, 36, 55
+		],
 		lineup	=> [
 			[18, 8],
 			[ 3, 6],
@@ -93,6 +96,9 @@ $s->init({
 			31 => 'Small, Aaron',
 			56 => 'Sturtze, Tanyon',
 		},
+		lefties => [
+			19, 41, 46, 48
+		],
 		lineup	=> [
 			[ 2, 6],
 			[51, 8],
@@ -570,6 +576,7 @@ $s->inn;
 $s->totals;
 
 my $pdffile = $s->generate;
+print $pdffile, "\n";
 
 $s->pdfopen;
 
