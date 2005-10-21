@@ -1,3 +1,13 @@
+0.03  Thu Oct 20 21:48:38 2005
+	- Some syntax changes for play_ball
+	- Add init() parsing/handling to play_ball (see example3.plx)
+	- Put in some sanity-checking for outs, balls, strikes, and fouls
+	- Make sure totals() can be called only once
+	- Make sure that totals are properly tabulated even if a batter's
+	  totals cannot be printed
+	- Allow pdfopen() to take a filename to open as an argument
+	- Moved examples to examples/ directory, and added more
+
 0.02  Fri Sep 16 23:47:38 2005
 	- run actual test
 	- clean up internal path handling

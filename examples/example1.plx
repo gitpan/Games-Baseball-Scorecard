@@ -5,7 +5,6 @@ use strict;
 use Games::Baseball::Scorecard;
 
 # This is a game the Sox lost, but I just scored it, so I used it.  sigh.
-# Soon I will replace this with a better game, like maybe 2004 ALCS Game 7.
 
 # http://mlb.mlb.com/NASApp/mlb/news/boxscore.jsp?gid=2005_09_09_bosmlb_nyamlb_1
 # http://sports.espn.go.com/mlb/boxscore?gameId=250909110

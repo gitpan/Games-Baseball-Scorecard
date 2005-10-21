@@ -10,7 +10,7 @@ use File::Temp 'tempdir';
 use File::Spec::Functions qw(:DEFAULT rel2abs);
 use Text::ParseWords;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 our($SCORECARD, $TEX, $TEXD);
 our $MPOST   = 'mpost';
@@ -287,6 +287,12 @@ sub debug {
 	return $self->{debug};
 }
 
+sub death {
+	my($self, $err) = @_;
+	printf STDERR "die: $err\nInning: $self->{curr}{inn}, order: $self->{curr}{ab}\n";
+	exit;
+}
+
 
 =item init(DATA)
 
@@ -382,13 +388,13 @@ sub generate {
 }
 
 sub _run {
-	my($self, $command, $file) = @_;
+	my($self, $command, $file, $abs) = @_;
 
 	unless (chdir $self->{dir}) {
 		die "Can't chdir $self->{dir}: $!";
 	}
 
-	my $path = catfile($self->{dir}, $file);
+	my $path = $abs ? $file : catfile($self->{dir}, $file);
 	print "==> " if $self->{debug} > 1;
 	print "$command $path\n" if $self->{debug};
 	local $/;
@@ -429,17 +435,23 @@ sub close {
 }
 
 
-=item pdfopen
+=item pdfopen([FILE])
 
-Opens the PDF using the program specified in C<$OPEN> (default 'open',
-used by Mac OS X to open the document in the default PDF viewer).
+Opens the PDF (or filename provided) using the program specified in
+C<$OPEN> (default 'open', used by Mac OS X to open the document in the default
+PDF viewer).
 
 =cut
 
 sub pdfopen {
-	my($self) = @_;
+	my($self, $file) = @_;
+	my $abs = 1;
+	if (!$file) {
+		$abs  = 0;
+		$file = "$self->{base}.pdf";
+	}
 
-	$self->_run($OPEN, "$self->{base}.pdf") if $OPEN;
+	$self->_run($OPEN, $file, $abs) if $OPEN;
 }
 
 
@@ -720,7 +732,7 @@ before moving on to the next at-bat.
 
 =over 4
 
-=item play_ball
+=item play_ball(TEXT[, TEAMS])
 
 C<play_ball> is a convenience method for handling input as text instead of
 method calls (internally, it converts the text to method calls).
@@ -761,34 +773,117 @@ Is equivalent to:
 	
 	EOT
 
+Prefixing a method name with 'ha' will call C<home_away> for that method
+(useful for adding new players, such as 'ha add_player 9 3 8' to add a
+player #3 to center field in the ninth spot for the fielding team, as
+doing it without 'ha' would make the change for the team at bat).
+
+You can also put data for C<init> in the text, at the top.  Include any
+of the "root-level" strings, e.g.:
+
+	scorer  Pudge
+	date    2004-10-24, 20:05-23:25
+
+After those, add the string 'away' or 'home', with the team name following;
+then 'starter' with the starer's number; then the string 'lineup' followed by
+the lineup data:
+
+	away	Boston Red Sox
+	starter	32
+	lineup
+		18 8
+		44 6
+		24 7
+
+Then put the other string ('home'), followed by the data for that team.  To
+complete the data, pass in a hashref with the team name (exactly the same
+as included following the string 'home' or 'away') as the key to a hashref,
+and the 'roster' / 'lefties' keys filled out (just as in C<init>).
+
+See the F<example3.plx> script and F<example3.txt> files for an example.
+
 =cut
 
 sub play_ball {
-	my($s, $game) = @_;
+	my($self, $game, $data) = @_;
 
-	for my $l (split /\n/, $game) {
-		next if $l =~ /^\s*#/;
-		$l =~ s/^\s+//s;
-		$l =~ s/\s+$//s;
-		next unless $l;
+	my @lines =	grep { $_ }
+			map  { s/^\s+//s; s/\s+$//s; $_ }
+			grep { !/^\s*#/ }
+			split /\n/, $game;
 
+	if ($game =~ /\n__INIT__\n/) {
+		my %init;
+
+		while (my $l = shift @lines) {
+			last if $l =~ /^__INIT__$/;
+
+			my @w = split /\s+/, $l, 2;
+			if ($w[0] =~ /^(?:date|temp|at|att|scorer|wind)$/) {
+				$init{$w[0]} = $w[1];
+
+			} elsif ($w[0] =~ /^(home|away)$/) {
+				my $team = $init{$1} ||= $data->{teams}{$w[1]};
+				$team->{team} = $w[1];
+
+				TEAM: while (my $l2 = shift @lines) {
+					my @w2 = split /\t/, $l2;
+					if ($w2[0] eq 'starter') {
+						$team->{starter} = $w2[1];
+
+					} elsif ($w2[0] eq 'lineup') {
+						while (my $l3 = shift @lines) {
+							my @w3 = split /\s+/, $l3;
+							if ($w3[0] !~ /^\d/) {
+								unshift @lines, $l3;
+								last TEAM;
+							}
+							push @{$team->{lineup}}, [$w3[0], $w3[1]];
+						}
+					}
+				}
+			}
+
+		}
+
+		$self->init(\%init);
+	}
+
+	while (my $l = shift @lines) {
+		last if $l =~ /^__GAME__$/;
 		my @w = quotewords('\s+', 0, $l);
 		my $m = shift @w;
 
-		$m = 'pitches' if $m eq 'p';
+		my $ha;
+		if ($m eq 'ha') {
+			$ha = 1;
+			$m = shift @w;
+			$self->home_away;
+		}
+
+		next unless $m;
+
+		$m = 'tout' if $m eq 'to';
+		$m = 'reach' if $m eq 'r';
 		$m = 'advance' if $m eq '->';
-		if ($m =~ /^(i?bb|hp)$/i) {
+		$m = 'pitches' if $m eq 'p';
+		if ($m eq 'pitches') {
+			 @w = map { split // } @w;
+		}
+
+		if ($m =~ /^(i?bb|hp|fc)$/i) {
 			unshift @w, $m;
 			$m = 'reach';
 		}
 
-		unless ($s->can($m)) {
+		unless ($self->can($m)) {
+			$m =~ s/^(\D+)/\U$1/;
 			unshift @w, $m;
 			$m = 'out';
 		}
 
-		next unless $m;
-		$s->$m(@w);
+		$self->$m(@w);
+		$self->home_away if $ha;
 	}
 }
 
@@ -823,19 +918,27 @@ sub pitches {
 sub ball {
 	my($self, $num) = @_;
 	my $pc = $self->pc;
+
+	$self->death("Ball $num?") if $num > 3;
+
 	$self->output(_label(_btex($pc, 'sf'), 'ball'   . _num($num)));
 }
 
 sub strike {
 	my($self, $num) = @_;
 	my $pc = $self->pc(1);
+
+	$self->death("Strike $num?") if $num > 2;
+
 	$self->output(_label(_btex($pc, 'sf'), 'strike' . _num($num)));
 }
 
 sub foul {
 	my($self, $num) = @_;
 	my $pc = $self->pc(1);
-	$self->output(_label(_btex('x', 'sf'), 'foul'   . _num($num)));
+
+	$self->output(_label(_btex('x', 'sf'), 'foul'   . _num($num)))
+		unless $num > 4;
 }
 
 sub pc {
@@ -880,6 +983,14 @@ sub hit {
 	my($self, $bases, $where, $label) = @_;
 	$where ||= '';
 
+	if ($bases eq 'U') {
+		$self->rbi;
+		$bases = 4;
+	} elsif ($bases == 4) {
+		$self->rbi;
+		$self->er;
+	}
+
 	$self->reach($bases, $bases);
 
 	$self->{curr}{stats}{batter}{h}++;
@@ -888,8 +999,6 @@ sub hit {
 	$self->{curr}{stats}{game}{$bases}++;
 	$self->{curr}{stats}{pitcher}{h}++;
 	$self->{curr}{stats}{pitcher}{$bases}++;
-
-	$self->er, $self->rbi if $bases == 4;
 
 	my $foo = $bases == 4 ? 'hr' : 'of';
 	my $loc = lc $where eq 'il' ? 'ifleft' :
@@ -1039,6 +1148,9 @@ sub _out {
 			$num = $_, last if !$self->{out}[$_];
 		}
 	}
+
+	$self->death('No out number?') unless $num;
+
 	$self->{out}[$num] = 1;
 	$self->{curr}{stats}{game}{outs}++;
 
@@ -1368,10 +1480,14 @@ finall C<inn> method call, if you wish to generate the stat totals.
 sub totals {
 	my($self) = @_;
 
+	return if $self->{_totals};
+
 	for (qw(away home)) {
 		$self->home_away($_);
 		$self->_totals;
 	}
+
+	$self->{_totals} = 1;
 }
 
 sub _totals {
@@ -1399,11 +1515,11 @@ sub _totals {
 		next unless $lineup->[$i];
 
 		for my $j (0 .. $#{$lineup->[$i]}) {
-			next if $j > 2;
 			my $bstats = $self->{curr}{stats}{batters}{$lineup->[$i][$j][0]};
 			for (qw(ab r h rbi bb k)) {
 				$pstats{$_} += $bstats->{$_} ||= 0;
 			}
+			next if $j > 2;
 
 			my $rep = '';
 			$rep = sprintf('*%d', 1+$j) if $j;
@@ -2476,6 +2592,9 @@ of the scorecard.  So if there are more than 11 innings, more than nine batters
 in an inning, more than three players in a lineup position, or more than
 ten pitchers, it will fail, either by dying, or just screwing up the output.
 
+More than four foul balls will not be recorded for a given at-bat in the graphic
+(but the pitch counts will still be incremented appropriately).
+
 Also, no attempt is made to make sure you have the right number of outs in an
 innings, balls/strikes in a walk/strikeout, and so on.  We don't even necessarily
 check to make sure you've called inn() before you call your first ab(), or that
@@ -2514,6 +2633,6 @@ http://www.frontier.iarc.uaf.edu/~cswingle/baseball/scorecards.php
 
 =head1 VERSION
 
-$Id: Scorecard.pm,v 1.4 2005/09/17 06:50:33 pudge Exp $
+$Id: Scorecard.pm,v 1.5 2005/10/21 04:48:58 pudge Exp $
 
 __END__
